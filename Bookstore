@@ -1,0 +1,214 @@
+# app.py
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+# Initialize SQLAlchemy
+db = SQLAlchemy()
+
+def create_app():
+    app = Flask(__name__)
+    # Database configuration (SQLite for simplicity)
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///bookstore.db'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+    db.init_app(app)
+
+    with app.app_context():
+        # Import models so they register with SQLAlchemy
+        import models
+        db.create_all()  # Create tables if they don't exist
+
+        # Register blueprints
+        from inventory import inventory_bp
+        from sales import sales_bp
+        from customer_orders import customer_orders_bp
+        from supplier_orders import supplier_orders_bp
+
+        app.register_blueprint(inventory_bp, url_prefix='/inventory')
+        app.register_blueprint(sales_bp, url_prefix='/sales')
+        app.register_blueprint(customer_orders_bp, url_prefix='/customer_orders')
+        app.register_blueprint(supplier_orders_bp, url_prefix='/supplier_orders')
+
+    return app
+
+if __name__ == '__main__':
+    create_app().run(debug=True)
+```
+
+```
+# models.py
+from datetime import datetime
+from app import db
+
+class Book(db.Model):
+    id       = db.Column(db.Integer, primary_key=True)
+    title    = db.Column(db.String(200), nullable=False)
+    author   = db.Column(db.String(100), nullable=False)
+    # One-to-one relationship to inventory
+    inventory = db.relationship('InventoryItem', backref='book', uselist=False)
+
+class InventoryItem(db.Model):
+    id        = db.Column(db.Integer, primary_key=True)
+    book_id   = db.Column(db.Integer, db.ForeignKey('book.id'), nullable=False)
+    quantity  = db.Column(db.Integer, default=0)
+
+class Sale(db.Model):
+    id     = db.Column(db.Integer, primary_key=True)
+    date   = db.Column(db.DateTime, default=datetime.utcnow)
+    total  = db.Column(db.Float, nullable=False)
+
+class CustomerOrder(db.Model):
+    id             = db.Column(db.Integer, primary_key=True)
+    customer_name  = db.Column(db.String(100), nullable=False)
+    date           = db.Column(db.DateTime, default=datetime.utcnow)
+    status         = db.Column(db.String(20), default='pending')
+
+class SupplierOrder(db.Model):
+    id             = db.Column(db.Integer, primary_key=True)
+    supplier_name  = db.Column(db.String(100), nullable=False)
+    date           = db.Column(db.DateTime, default=datetime.utcnow)
+    status         = db.Column(db.String(20), default='pending')
+```
+
+```
+# inventory.py
+from flask import Blueprint, request, jsonify
+from app import db
+from models import Book, InventoryItem
+
+inventory_bp = Blueprint('inventory', __name__)
+
+@inventory_bp.route('/', methods=['GET'])
+def list_inventory():
+    items = InventoryItem.query.all()
+    return jsonify([{
+        'book_id': item.book_id,
+        'title':   item.book.title,
+        'author':  item.book.author,
+        'quantity': item.quantity
+    } for item in items])
+
+@inventory_bp.route('/', methods=['POST'])
+def add_book():
+    data = request.get_json()
+    # Create Book record
+    book = Book(title=data['title'], author=data['author'])
+    db.session.add(book)
+    db.session.commit()
+
+    # Link an InventoryItem
+    inv = InventoryItem(book_id=book.id, quantity=data.get('quantity', 0))
+    db.session.add(inv)
+    db.session.commit()
+
+    return jsonify({'message': 'Book added', 'book_id': book.id}), 201
+
+@inventory_bp.route('/<int:book_id>', methods=['PUT'])
+def update_quantity(book_id):
+    data = request.get_json()
+    item = InventoryItem.query.filter_by(book_id=book_id).first_or_404()
+    item.quantity = data['quantity']
+    db.session.commit()
+    return jsonify({'message': 'Quantity updated', 'new_quantity': item.quantity})
+```
+
+```
+# sales.py
+from flask import Blueprint, request, jsonify
+from app import db
+from models import Sale
+
+sales_bp = Blueprint('sales', __name__)
+
+@sales_bp.route('/', methods=['GET'])
+def list_sales():
+    sales = Sale.query.all()
+    return jsonify([{
+        'sale_id': s.id,
+        'date':    s.date.isoformat(),
+        'total':   s.total
+    } for s in sales])
+
+@sales_bp.route('/', methods=['POST'])
+def create_sale():
+    data = request.get_json()
+    sale = Sale(total=data['total'])
+    db.session.add(sale)
+    db.session.commit()
+    return jsonify({'message': 'Sale recorded', 'sale_id': sale.id}), 201
+```
+
+```
+# customer_orders.py
+from flask import Blueprint, request, jsonify
+from app import db
+from models import CustomerOrder
+
+customer_orders_bp = Blueprint('customer_orders', __name__)
+
+@customer_orders_bp.route('/', methods=['GET'])
+def list_orders():
+    orders = CustomerOrder.query.all()
+    return jsonify([{
+        'order_id':      o.id,
+        'customer_name': o.customer_name,
+        'date':          o.date.isoformat(),
+        'status':        o.status
+    } for o in orders])
+
+@customer_orders_bp.route('/', methods=['POST'])
+def place_order():
+    data = request.get_json()
+    order = CustomerOrder(
+        customer_name=data['customer_name'],
+        status=data.get('status', 'pending')
+    )
+    db.session.add(order)
+    db.session.commit()
+    return jsonify({'message': 'Order placed', 'order_id': order.id}), 201
+
+@customer_orders_bp.route('/<int:order_id>', methods=['PUT'])
+def update_order(order_id):
+    data = request.get_json()
+    order = CustomerOrder.query.get_or_404(order_id)
+    order.status = data['status']
+    db.session.commit()
+    return jsonify({'message': 'Order updated', 'new_status': order.status})
+```
+
+```
+# supplier_orders.py
+from flask import Blueprint, request, jsonify
+from app import db
+from models import SupplierOrder
+
+supplier_orders_bp = Blueprint('supplier_orders', __name__)
+
+@supplier_orders_bp.route('/', methods=['GET'])
+def list_suppler_orders():
+    orders = SupplierOrder.query.all()
+    return jsonify([{
+        'order_id':     o.id,
+        'supplier_name': o.supplier_name,
+        'date':          o.date.isoformat(),
+        'status':        o.status
+    } for o in orders])
+
+@supplier_orders_bp.route('/', methods=['POST'])
+def create_supplier_order():
+    data = request.get_json()
+    order = SupplierOrder(
+        supplier_name=data['supplier_name'],
+        status=data.get('status', 'pending')
+    )
+    db.session.add(order)
+    db.session.commit()
+    return jsonify({'message': 'Supplier order created', 'order_id': order.id}), 201
+
+@supplier_orders_bp.route('/<int:order_id>', methods=['PUT'])
+def update_supplier_order(order_id):
+    data = request.get_json()
+    order = SupplierOrder.query.get_or_404(order_id)
+    order.status = data['status']
+    db.session.commit()
+    return jsonify({'message': 'Supplier order status updated', 'new_status': order.status})
